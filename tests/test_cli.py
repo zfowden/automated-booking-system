@@ -46,7 +46,7 @@ def test_book_success_wires_request_and_skips_email(monkeypatch):
             return True
 
     monkeypatch.setattr("tennis_booking.clubspark.ClubSparkBooker", FakeBooker)
-    monkeypatch.setattr("tennis_booking.notifier.EmailNotifier", FakeNotifier)
+    monkeypatch.setattr("tennis_booking.notifier.make_notifier", lambda s: FakeNotifier(s))
 
     result = runner.invoke(
         app,
@@ -79,7 +79,7 @@ def test_book_failure_exit_code_and_email(monkeypatch):
             return True
 
     monkeypatch.setattr("tennis_booking.clubspark.ClubSparkBooker", FakeBooker)
-    monkeypatch.setattr("tennis_booking.notifier.EmailNotifier", FakeNotifier)
+    monkeypatch.setattr("tennis_booking.notifier.make_notifier", lambda s: FakeNotifier(s))
 
     result = runner.invoke(app, ["book", "--date", _soon_str(), "--time", "18:00"])
     assert result.exit_code == 1

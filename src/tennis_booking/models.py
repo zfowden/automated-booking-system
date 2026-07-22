@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date as date_cls
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -12,6 +13,15 @@ ALLOWED_DURATIONS = (30, 60, 90, 120)
 
 #: Courts open this many days in advance.
 BOOKING_WINDOW_DAYS = 7
+
+#: The venue's local timezone. The booking window is relative to *London* time,
+#: not the host's clock, so the 7-day maths is correct on a UTC cloud host.
+VENUE_TZ = ZoneInfo("Europe/London")
+
+
+def london_today() -> date_cls:
+    """Today's date in the venue's timezone (Europe/London)."""
+    return datetime.now(VENUE_TZ).date()
 
 
 class BookingRequest(BaseModel):
@@ -34,7 +44,7 @@ class BookingRequest(BaseModel):
 
     @model_validator(mode="after")
     def _valid_date_window(self) -> BookingRequest:
-        today = datetime.now().date()
+        today = london_today()
         if self.date < today:
             raise ValueError(f"date {self.date} is in the past")
         latest = today + timedelta(days=BOOKING_WINDOW_DAYS)

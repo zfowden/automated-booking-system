@@ -15,6 +15,13 @@ class LoginMethod(str, Enum):
     LTA = "lta"  # "Log in with the LTA" button
 
 
+class EmailProvider(str, Enum):
+    """How confirmation emails are sent."""
+
+    SMTP = "smtp"  # raw SMTP (local dev; discouraged on Cloud Run)
+    SENDGRID = "sendgrid"  # SendGrid HTTPS API (recommended on GCP)
+
+
 class Settings(BaseSettings):
     """All runtime configuration, loaded from environment / .env file."""
 
@@ -50,13 +57,36 @@ class Settings(BaseSettings):
     keep_open_on_error: bool = True
     keep_open_seconds: int = 300
 
-    # --- Email (optional) ---
+    # --- Email ---
+    email_provider: EmailProvider = EmailProvider.SMTP
+    email_from: str = ""
+    email_to: str = ""
+    # SMTP (local dev)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
-    email_from: str = ""
-    email_to: str = ""
+    # SendGrid (cloud)
+    sendgrid_api_key: str = ""
+
+    # --- Payment ---
+    # Card details for paid checkout. On cloud these come from Secret Manager;
+    # locally from .env. See the payment caveats in the deploy runbook.
+    card_number: str = ""
+    card_expiry: str = ""  # MM/YY
+    card_cvv: str = ""
+    card_name: str = ""
+    card_postcode: str = ""
+    # HARD SAFETY GATE: real bookings cost money. The card is only submitted when
+    # this is explicitly true. Left false, the flow fills the form but stops
+    # before paying (dry run) and reports it did not complete payment.
+    confirm_payment: bool = False
+
+    # --- Google Cloud ---
+    # When true, secrets are pulled from Secret Manager before Settings loads
+    # (see secrets.py). Off for local dev.
+    use_secret_manager: bool = False
+    gcp_project: str = ""
 
     @property
     def booking_url(self) -> str:
@@ -65,5 +95,14 @@ class Settings(BaseSettings):
 
     @property
     def email_enabled(self) -> bool:
-        """Whether enough SMTP settings are present to send email."""
-        return bool(self.smtp_host and self.email_from and self.email_to)
+        """Whether enough settings are present to send email via the chosen provider."""
+        if not (self.email_from and self.email_to):
+            return False
+        if self.email_provider is EmailProvider.SENDGRID:
+            return bool(self.sendgrid_api_key)
+        return bool(self.smtp_host)
+
+    @property
+    def has_card_details(self) -> bool:
+        """Whether card fields are populated enough to attempt payment."""
+        return bool(self.card_number and self.card_expiry and self.card_cvv)

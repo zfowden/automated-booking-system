@@ -71,14 +71,14 @@ def book(
 
     # Import here so unit tests can import the CLI without Playwright installed.
     from .clubspark import ClubSparkBooker
-    from .notifier import EmailNotifier
+    from .notifier import make_notifier
 
     typer.echo(f"Booking {settings.venue_slug}: {request.date} at {request.start_time:%H:%M} "
                f"for {request.duration_minutes} min...")
     result = ClubSparkBooker(settings).book(request)
 
     if not no_email:
-        EmailNotifier(settings).send(result)
+        make_notifier(settings).send(result)
 
     color = typer.colors.GREEN if result.success else typer.colors.RED
     typer.secho(result.summary(), fg=color)

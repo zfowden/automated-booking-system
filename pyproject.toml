@@ -9,6 +9,11 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "typer>=0.12",
+    "google-cloud-secret-manager>=2.20",
+    "sendgrid>=6.11",
+    # Ships the IANA tz database so ZoneInfo("Europe/London") works on hosts
+    # without system tzdata (Windows, slim containers).
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +24,7 @@ dev = [
 
 [project.scripts]
 tennis-book = "tennis_booking.cli:app"
+tennis-book-job = "tennis_booking.job:main"
 
 [build-system]
 requires = ["hatchling"]

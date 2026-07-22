@@ -1,0 +1,14 @@
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# Never bake secrets or local state into the image
+.env
+storage_state.json
+*.log
+screenshots/
+tests/
+deploy/

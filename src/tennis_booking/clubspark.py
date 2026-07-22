@@ -33,6 +33,10 @@ from .models import BookingRequest, BookingResult, Slot
 
 log = get_logger(__name__)
 
+
+class PaymentError(RuntimeError):
+    """Raised when a paid checkout is reached but payment cannot be completed."""
+
 # --- Selectors (verified against the live ClubSpark DOM, 2026-07). -----------
 # NB: the booking grid renders inside an <iframe>; grid selectors are resolved
 # against that frame (see _grid_frame), not the top-level page.
@@ -70,9 +74,28 @@ SEL_SLOT_COST = ".cost"
 SEL_CONFIRM_BUTTON = "button:has-text('Confirm'), button:has-text('Continue')"
 # Confirmation reference text after a successful booking.
 SEL_CONFIRMATION = ".booking-confirmation, .confirmation-reference"
+# --- Payment checkout selectors -------------------------------------------
+# NB: These are BEST-GUESS defaults and MUST be verified against the live paid
+# checkout (see the Phase-0 investigation in the deploy runbook). Paid ClubSpark
+# checkouts are commonly a third-party (Stripe/Opayo) form, often inside an
+# iframe -- if so these top-level selectors will not match and the flow will
+# stop safely rather than mis-pay. Card fields are matched broadly by
+# name/placeholder/autocomplete.
+SEL_PAY_PAGE_MARKER = (
+    "input[autocomplete='cc-number'], input[name*='card' i], "
+    "iframe[name*='card' i], iframe[title*='card' i], iframe[src*='stripe' i]"
+)
+SEL_CARD_NUMBER = "input[autocomplete='cc-number'], input[name*='number' i], input[name*='cardnumber' i]"
+SEL_CARD_EXPIRY = "input[autocomplete='cc-exp'], input[name*='exp' i], input[placeholder*='MM' i]"
+SEL_CARD_CVV = "input[autocomplete='cc-csc'], input[name*='cvc' i], input[name*='cvv' i], input[name*='security' i]"
+SEL_CARD_NAME = "input[autocomplete='cc-name'], input[name*='cardholder' i], input[name*='nameoncard' i]"
+SEL_CARD_POSTCODE = "input[autocomplete='postal-code'], input[name*='postcode' i], input[name*='zip' i]"
+SEL_PAY_BUTTON = "button:has-text('Pay'), button:has-text('Pay now'), button:has-text('Confirm payment')"
 # -----------------------------------------------------------------------------
 
-SCREENSHOT_DIR = Path("screenshots")
+# Where error/dry-run screenshots are written. Overridable via SCREENSHOT_DIR so
+# cloud runs can point it at a writable path (e.g. /tmp/screenshots).
+SCREENSHOT_DIR = Path(os.environ.get("SCREENSHOT_DIR", "screenshots"))
 
 
 class ClubSparkBooker:
@@ -161,6 +184,10 @@ class ClubSparkBooker:
             "headless": self.settings.headless,
             "slow_mo": self.settings.slow_mo_ms,
         }
+        # In a sandboxed container (Cloud Run) headless Chromium needs these flags
+        # or it crashes on startup / runs out of /dev/shm.
+        if self.settings.headless:
+            launch_kwargs["args"] = ["--no-sandbox", "--disable-dev-shm-usage"]
         if self.settings.use_chrome:
             try:
                 log.info(
@@ -414,7 +441,12 @@ class ClubSparkBooker:
     # -- booking --------------------------------------------------------------
 
     def _book_slot(self, page: Page, slot: Slot) -> str | None:
-        """Click the slot (inside the grid iframe) and complete the confirmation."""
+        """Click the slot, confirm, and pay if the venue charges for the slot.
+
+        Raises :class:`PaymentError` if a paid checkout is reached but payment
+        cannot be completed (e.g. no card configured, or the payment step is left
+        in dry-run because ``CONFIRM_PAYMENT`` is not set).
+        """
         if not slot.selector:
             raise RuntimeError("Slot has no selector to click.")
         frame = self._grid_frame(page)
@@ -422,7 +454,6 @@ class ClubSparkBooker:
         page.wait_for_load_state("networkidle")
 
         # The confirm/continue button may live in the iframe or the top page.
-        # Free council courts are typically a single confirm step.
         for target in (frame, page):
             try:
                 target.click(SEL_CONFIRM_BUTTON, timeout=8000)
@@ -433,7 +464,91 @@ class ClubSparkBooker:
         else:
             log.warning("No explicit confirm button found; assuming single-step booking.")
 
+        # If a paid checkout appeared, handle card entry + payment.
+        self._handle_payment(page)
+
         return self._read_confirmation(page)
+
+    def _handle_payment(self, page: Page) -> None:
+        """Detect and complete a paid checkout, if one is present.
+
+        Does nothing when no payment form is detected (free / already-confirmed
+        booking). When a checkout is detected, fills the card fields and then
+        pays -- but ONLY if ``settings.confirm_payment`` is true. Otherwise it
+        stops before paying (dry run) and raises :class:`PaymentError` so the run
+        is reported as not completed rather than silently spending money.
+        """
+        target = self._payment_target(page)
+        if target is None:
+            log.info("No payment step detected; treating as a free/confirmed booking.")
+            return
+
+        if not self.settings.has_card_details:
+            raise PaymentError(
+                "A paid checkout was reached but no card details are configured "
+                "(CARD_NUMBER / CARD_EXPIRY / CARD_CVV)."
+            )
+
+        log.info("Payment step detected; filling card details.")
+        self._fill_card(target)
+
+        if not self.settings.confirm_payment:
+            self._screenshot(page, "payment-dryrun")
+            raise PaymentError(
+                "Reached the payment step and filled the card, but CONFIRM_PAYMENT "
+                "is not enabled -- stopping before paying (dry run). Set "
+                "CONFIRM_PAYMENT=true to complete real, paid bookings."
+            )
+
+        log.warning("CONFIRM_PAYMENT enabled -- submitting payment (this spends money).")
+        self._click_first(target, page, SEL_PAY_BUTTON, timeout=10000)
+        page.wait_for_load_state("networkidle")
+
+    def _payment_target(self, page: Page):
+        """Return the frame/page containing the card form, or None if absent.
+
+        Checks the top page and every frame (paid checkouts are often in a
+        third-party iframe). Returns the first context exposing a card field.
+        """
+        candidates = [page, *page.frames]
+        for target in candidates:
+            try:
+                if target.locator(SEL_PAY_PAGE_MARKER).count() > 0:
+                    return target
+            except Exception:  # noqa: BLE001 - frame may be mid-navigation
+                continue
+        return None
+
+    def _fill_card(self, target) -> None:
+        """Fill the card fields on the payment target (best-effort per field)."""
+        s = self.settings
+        self._fill_if_present(target, SEL_CARD_NUMBER, s.card_number)
+        self._fill_if_present(target, SEL_CARD_EXPIRY, s.card_expiry)
+        self._fill_if_present(target, SEL_CARD_CVV, s.card_cvv)
+        if s.card_name:
+            self._fill_if_present(target, SEL_CARD_NAME, s.card_name)
+        if s.card_postcode:
+            self._fill_if_present(target, SEL_CARD_POSTCODE, s.card_postcode)
+
+    @staticmethod
+    def _fill_if_present(target, selector: str, value: str) -> None:
+        try:
+            loc = target.locator(selector).first
+            if loc.count() > 0:
+                loc.fill(value, timeout=8000)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not fill %r: %s", selector, exc)
+
+    @staticmethod
+    def _click_first(*targets_and_selector, timeout: int) -> None:
+        *targets, selector = targets_and_selector
+        for target in targets:
+            try:
+                target.click(selector, timeout=timeout)
+                return
+            except PlaywrightTimeoutError:
+                continue
+        raise PaymentError(f"Could not find the pay button ({selector}).")
 
     def _read_confirmation(self, page: Page) -> str | None:
         # Confirmation text may render in the iframe or the top-level page.

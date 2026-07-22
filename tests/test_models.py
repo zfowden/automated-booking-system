@@ -3,11 +3,17 @@ from datetime import date, time, timedelta
 import pytest
 from pydantic import ValidationError
 
-from tennis_booking.models import BookingRequest, BookingResult, Slot
+from tennis_booking.models import (
+    BOOKING_WINDOW_DAYS,
+    BookingRequest,
+    BookingResult,
+    Slot,
+    london_today,
+)
 
 
 def _soon() -> date:
-    return date.today() + timedelta(days=2)
+    return london_today() + timedelta(days=2)
 
 
 def test_valid_request():
@@ -18,12 +24,24 @@ def test_valid_request():
 
 def test_rejects_past_date():
     with pytest.raises(ValidationError):
-        BookingRequest(date=date.today() - timedelta(days=1), start_time=time(18, 0))
+        BookingRequest(date=london_today() - timedelta(days=1), start_time=time(18, 0))
 
 
 def test_rejects_beyond_window():
     with pytest.raises(ValidationError):
-        BookingRequest(date=date.today() + timedelta(days=8), start_time=time(18, 0))
+        BookingRequest(
+            date=london_today() + timedelta(days=BOOKING_WINDOW_DAYS + 1),
+            start_time=time(18, 0),
+        )
+
+
+def test_accepts_window_edges():
+    # today and exactly the last bookable day are both valid.
+    BookingRequest(date=london_today(), start_time=time(18, 0))
+    BookingRequest(
+        date=london_today() + timedelta(days=BOOKING_WINDOW_DAYS),
+        start_time=time(18, 0),
+    )
 
 
 def test_rejects_bad_duration():
