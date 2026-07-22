@@ -89,46 +89,7 @@ class EmailNotifier:
             return False
 
 
-class SendGridNotifier:
-    """Sends a plain-text result email via the SendGrid HTTPS API (port 443).
-
-    Preferred on Cloud Run, where outbound SMTP is unreliable/blocked.
-    """
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-
-    def send(self, result: BookingResult) -> bool:
-        if not self.settings.email_enabled:
-            log.warning("Email not configured (SendGrid API key missing); skipping notification.")
-            return False
-
-        # Imported lazily so local runs / tests need not install the SDK.
-        from sendgrid import SendGridAPIClient
-        from sendgrid.helpers.mail import Mail
-
-        message = Mail(
-            from_email=self.settings.email_from,
-            to_emails=self.settings.email_to,
-            subject=build_subject(result),
-            plain_text_content=build_body(result),
-        )
-        try:
-            client = SendGridAPIClient(self.settings.sendgrid_api_key)
-            response = client.send(message)
-            if 200 <= response.status_code < 300:
-                log.info("Result email sent to %s via SendGrid (%s)",
-                         self.settings.email_to, response.status_code)
-                return True
-            log.error("SendGrid returned status %s", response.status_code)
-            return False
-        except Exception as exc:  # noqa: BLE001 - notification failure must not crash the run
-            log.error("Failed to send result email via SendGrid: %s", exc)
-            return False
-
 
 def make_notifier(settings: Settings) -> Notifier:
     """Return the notifier matching ``settings.email_provider``."""
-    if settings.email_provider is EmailProvider.SENDGRID:
-        return SendGridNotifier(settings)
     return EmailNotifier(settings)

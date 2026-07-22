@@ -159,7 +159,9 @@ class ClubSparkBooker:
             try:
                 self._ensure_logged_in(page)
                 self._save_storage_state(context)
+                log.info("Navigating to booking grid for %s...", day)
                 self._goto_date(page, day)
+                log.info("Booking grid ready for %s; collecting free slots...", day)
                 slots = self._collect_free_slots(page)
                 log.info("Found %d available slot(s) on %s", len(slots), day)
                 return slots
@@ -236,11 +238,18 @@ class ClubSparkBooker:
         log.info("Logging in as %s via %s",
                  self.settings.clubspark_username, self.settings.login_method.value)
         page.click(SEL_LOGIN_LINK)
+        log.info("Waiting for the login page to load...")
         page.wait_for_load_state("networkidle")
 
+        if self._is_logged_in(page):
+            log.info("Auto-logged in after clicking sign-in link.")
+            return
+
         if self.settings.login_method is LoginMethod.LTA:
+            log.info("Using LTA login path (primary button).")
             self._login_via_lta(page)
         else:
+            log.info("Using ClubSpark login path (email/password form).")
             self._login_via_clubspark(page)
 
         if not self._is_logged_in(page):
@@ -258,11 +267,18 @@ class ClubSparkBooker:
         dynamic ids, so we match by placeholder / type / name.
         """
         try:
+            log.info("Clicking the LTA login button and waiting for the redirect...")
             with page.expect_navigation(wait_until="domcontentloaded",
                                         timeout=self.settings.slot_timeout_seconds * 1000):
                 page.click(SEL_LTA_LOGIN_BUTTON)
         except PlaywrightTimeoutError:
             log.warning("LTA redirect did not fire a navigation; continuing.")
+
+        page.wait_for_load_state("networkidle")
+
+        if self._is_logged_in(page):
+            log.info("Auto-logged in after clicking sign-in link.")
+            return
         page.wait_for_selector(SEL_LTA_USERNAME, state="visible",
                                timeout=self.settings.slot_timeout_seconds * 1000)
         page.fill(SEL_LTA_USERNAME, self.settings.clubspark_username)
