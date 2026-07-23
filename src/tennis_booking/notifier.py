@@ -70,10 +70,12 @@ class EmailNotifier:
             log.warning("Email not configured (SMTP settings missing); skipping notification.")
             return False
 
+        recipients = [addr.strip() for addr in self.settings.email_to.split(",") if addr.strip()]
+
         msg = EmailMessage()
         msg["Subject"] = build_subject(result)
         msg["From"] = self.settings.email_from
-        msg["To"] = self.settings.email_to
+        msg["To"] = recipients
         msg.set_content(build_body(result))
 
         try:

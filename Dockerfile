@@ -7,12 +7,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Europe/London \
     # Cloud-appropriate runtime defaults (override via env / Secret Manager).
+    LOGIN_METHOD=lta \
+    VENUE_SLUG=ClaphamCommon \
+    BASE_URL=https://clubspark.lta.org.uk \
     HEADLESS=true \
     USE_CHROME=false \
-    SLOW_MO_MS=0 \
+    SLOW_MO_MS=10 \
     KEEP_OPEN_ON_ERROR=false \
-    EMAIL_PROVIDER=sendgrid \
+    EMAIL_PROVIDER=smtp \
     USE_SECRET_MANAGER=true \
+    GCP_PROJECT=automated-booker \
+    EMAIL_FROM=zack.notifications@gmail.com \
+    EMAIL_TO=zack.fowden@gmail.com,valeriarodriguezm.18@gmail.com \
+    SMTP_HOST=smtp.gmail.com \
+    SMTP_PORT=587 \
+    SMTP_USERNAME=zack.notifications@gmail.com \
+    BOOK_DAYS_AHEAD=7
+    BOOK_TIME=18:00
+    BOOK_DURATION=60
+    BOOK_COURT=4
+    BOOK_FALLBACKS=19:00,20:00
     # Screenshots must go somewhere writable on the ephemeral container FS.
     SCREENSHOT_DIR=/tmp/screenshots
 

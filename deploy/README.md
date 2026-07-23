@@ -53,7 +53,7 @@ gcloud services enable run.googleapis.com cloudscheduler.googleapis.com \
     secretmanager.googleapis.com artifactregistry.googleapis.com
 
 # Service account for the job + scheduler
-gcloud iam service-accounts create "$SA" --display-name "Tennis booker"
+gcloud iam service-accounts create "$SA" --display-name "Automated booker"
 export SA_EMAIL="$SA@$PROJECT_ID.iam.gserviceaccount.com"
 
 # Artifact Registry repo for the image
