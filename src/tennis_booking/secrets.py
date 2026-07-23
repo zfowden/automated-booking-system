@@ -25,7 +25,7 @@ log = get_logger(__name__)
 SECRET_ENV_NAMES = (
     "CLUBSPARK_USERNAME",
     "CLUBSPARK_PASSWORD",
-    "SENDGRID_API_KEY",
+    "SMTP_PASSWORD",
     "CARD_NUMBER",
     "CARD_EXPIRY",
     "CARD_CVV",

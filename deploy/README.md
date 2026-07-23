@@ -5,7 +5,7 @@ Architecture: **Cloud Scheduler** (cron, Europe/London) → **Cloud Run Job**
 and pays by card → emails the result via **SendGrid**.
 
 The job entrypoint is `tennis-book-job` (`src/tennis_booking/job.py`). It reads the
-target booking from `BOOK_*` env vars and exits 0 on success / 1 on failure.
+target booking frome `BOOK_*` nv vars and exits 0 on success / 1 on failure.
 
 ---
 
