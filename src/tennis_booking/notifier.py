@@ -1,16 +1,9 @@
-"""Email notification of booking results.
-
-Two providers share one ``send(result) -> bool`` contract:
-- :class:`EmailNotifier` — raw SMTP (local dev; discouraged on Cloud Run).
-- :class:`SendGridNotifier` — SendGrid HTTPS API (recommended on GCP, port 443).
-
-Use :func:`make_notifier` to pick the provider from settings.
-"""
-
 from __future__ import annotations
 
+import mimetypes
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Protocol
 
 from .config import EmailProvider, Settings
@@ -51,7 +44,7 @@ def build_body(result: BookingResult) -> str:
     if result.error:
         lines += ["", f"Error: {result.error}"]
     if result.screenshot_path:
-        lines += ["", f"Screenshot: {result.screenshot_path}"]
+        lines += ["", "Screenshot attached."]
     return "\n".join(lines)
 
 
@@ -60,7 +53,8 @@ class Notifier(Protocol):
 
 
 class EmailNotifier:
-    """Sends a plain-text result email over SMTP (STARTTLS)."""
+    """Sends a plain-text result email over SMTP (STARTTLS), with the failure
+    screenshot (if any) attached directly rather than uploaded elsewhere."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -75,21 +69,42 @@ class EmailNotifier:
         msg = EmailMessage()
         msg["Subject"] = build_subject(result)
         msg["From"] = self.settings.email_from
-        msg["To"] = recipients
+        msg["To"] = ", ".join(recipients)
         msg.set_content(build_body(result))
+
+        self._attach_screenshot(msg, result.screenshot_path)
 
         try:
             with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=30) as smtp:
                 smtp.starttls()
                 if self.settings.smtp_username:
                     smtp.login(self.settings.smtp_username, self.settings.smtp_password)
-                smtp.send_message(msg)
-            log.info("Result email sent to %s via SMTP", self.settings.email_to)
+                smtp.send_message(msg, to_addrs=recipients)
+            log.info("Result email sent to %s via SMTP", recipients)
             return True
         except Exception as exc:  # noqa: BLE001 - notification failure must not crash the run
             log.error("Failed to send result email via SMTP: %s", exc)
             return False
 
+    @staticmethod
+    def _attach_screenshot(msg: EmailMessage, screenshot_path: str | None) -> None:
+        """Attach the screenshot file to the email, if one was produced.
+
+        Best-effort: a missing or unreadable file logs a warning rather than
+        failing the whole notification.
+        """
+        if not screenshot_path:
+            return
+        path = Path(screenshot_path)
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            log.warning("Could not read screenshot %s for attachment: %s", screenshot_path, exc)
+            return
+
+        mime_type, _ = mimetypes.guess_type(path.name)
+        maintype, subtype = (mime_type or "image/png").split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=path.name)
 
 
 def make_notifier(settings: Settings) -> Notifier:

@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BASE_URL=https://clubspark.lta.org.uk \
     HEADLESS=true \
     USE_CHROME=false \
-    SLOW_MO_MS=10 \
+    SLOW_MO_MS=500 \
     KEEP_OPEN_ON_ERROR=false \
     EMAIL_PROVIDER=smtp \
     USE_SECRET_MANAGER=true \
@@ -22,11 +22,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SMTP_HOST=smtp.gmail.com \
     SMTP_PORT=587 \
     SMTP_USERNAME=zack.notifications@gmail.com \
-    BOOK_DAYS_AHEAD=7
-    BOOK_TIME=18:00
-    BOOK_DURATION=60
-    BOOK_COURT=4
-    BOOK_FALLBACKS=19:00,20:00
+    BOOK_DAYS_AHEAD=6 \
+    BOOK_TIME=18:00 \
+    BOOK_DURATION=60 \
+    BOOK_COURT=4 \
+    BOOK_FALLBACKS=19:00,20:00 \
     # Screenshots must go somewhere writable on the ephemeral container FS.
     SCREENSHOT_DIR=/tmp/screenshots
 
