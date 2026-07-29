@@ -103,6 +103,9 @@ SEL_STRIPE_SUBMIT_BUTTON = "#cs-stripe-elements-submit-button"
 SEL_STRIPE_CARD_NUMBER_FRAME = "iframe[title='Secure card number input frame']"
 SEL_STRIPE_CARD_EXPIRY_FRAME = "iframe[title='Secure expiration date input frame']"
 SEL_STRIPE_CARD_CVC_FRAME = "iframe[title='Secure CVC input frame']"
+# The confirmation page ("...BookingConfirmation/{guid}") shows this heading
+# on success. Verified against the live confirmation HTML, 2026-07.
+SEL_CONFIRMATION = "h1.success"
 # -----------------------------------------------------------------------------
 
 # Where error/dry-run screenshots are written. Overridable via SCREENSHOT_DIR so
@@ -559,31 +562,76 @@ class ClubSparkBooker:
         log.warning("CONFIRM_PAYMENT enabled -- submitting payment (this spends money).")
         pay_button = page.locator(SEL_STRIPE_SUBMIT_BUTTON)
         pay_button.wait_for(state="visible", timeout=10000)
-        log.info(
-            "Pay button found: text=%r disabled=%r",
-            pay_button.inner_text(timeout=2000),
-            pay_button.get_attribute("disabled"),
-        )
-        # Stripe enables the button once all three fields validate; give it a beat.
         for _ in range(20):
             if not pay_button.is_disabled():
                 break
             page.wait_for_timeout(250)
         pay_button.click(timeout=10000)
 
+        self._wait_for_payment_outcome(page)
+
+    def _wait_for_payment_outcome(self, page: Page) -> None:
+        """After clicking Pay, the venue does ONE of:
+        1. Navigates away entirely to '.../Booking/BookingConfirmation/{id}'
+            (success) -- this destroys the payment-status divs from the old
+            checkout page, so waiting only on those elements times out even on
+            a successful payment (this was the earlier bug).
+        2. Stays on the same page and reveals '.payment-status.payment-failed'
+            (failure).
+        3. Stays on the same page and reveals '.payment-status.payment-success'
+            (some venues don't navigate at all).
+        Poll for whichever happens first instead of assuming one specific shape.
+        """
+        # Let any in-flight navigation actually settle first. Right after the
+        # click, the page can be mid-navigation -- old DOM torn down, new one not
+        # yet attached -- so page.url / locator queries in that window can be
+        # stale or throw. "load" is enough to know the new document is in place;
+        # "networkidle" then gives its async content (e.g. the confirmation
+        # heading) a chance to finish rendering before we start polling it.
         try:
-            page.wait_for_selector(".payment-success, .payment-failed", timeout=self.settings.slot_timeout_seconds * 1000)
-        except PlaywrightTimeoutError as exc:
-            self._screenshot(page, "payment-no-result")
-            raise PaymentError(
-                "Clicked Pay but no success/failure indicator appeared in time."
-            ) from exc
+            page.wait_for_load_state("load", timeout=self.settings.slot_timeout_seconds * 1000)
+        except PlaywrightTimeoutError:
+            log.warning("Page did not reach 'load' state after clicking Pay; continuing anyway.")
+        try:
+            page.wait_for_load_state("networkidle", timeout=self.settings.slot_timeout_seconds * 1000)
+        except PlaywrightTimeoutError:
+            log.warning("Page did not reach 'networkidle' after clicking Pay; continuing anyway.")
 
-        if page.locator(".payment-failed:not(.hidden)").count() > 0:
-            error_text = page.locator(".stripe-error-message").first.inner_text(timeout=2000)
-            raise PaymentError(f"Stripe reported a payment failure: {error_text}")
+        timeout_ms = self.settings.slot_timeout_seconds * 1000
+        waited, step = 0, 500
+        while waited < timeout_ms:
+            try:
+                if "/BookingConfirmation/" in page.url:
+                    log.info("Navigated to booking confirmation page: %s", page.url)
+                    return
+            except Exception:  # noqa: BLE001 - page may be mid-navigation
+                pass
 
-    # --- Payment: per-field frame search (fields may live in separate iframes) --
+            try:
+                if page.locator(".payment-status.payment-success:not(.hidden)").count() > 0:
+                    log.info("Payment success indicator shown (no navigation occurred).")
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                failed = page.locator(".payment-status.payment-failed:not(.hidden)")
+                if failed.count() > 0:
+                    error_text = page.locator(".stripe-error-message").first.inner_text(timeout=2000)
+                    raise PaymentError(f"Stripe reported a payment failure: {error_text}")
+            except PaymentError:
+                raise
+            except Exception:  # noqa: BLE001
+                pass
+
+            page.wait_for_timeout(step)
+            waited += step
+
+        self._screenshot(page, "payment-no-result")
+        raise PaymentError(
+            "Clicked Pay but neither a confirmation page nor a success/failure "
+            "indicator appeared in time."
+        )
 
     def _find_field_target(self, page: Page, selector: str):
         """Return the frame/page whose DOM contains `selector`, or None.
@@ -679,20 +727,24 @@ class ClubSparkBooker:
         raise PaymentError(f"Could not find the pay button ({selector}).")
 
     def _read_confirmation(self, page: Page) -> str | None:
-        # Confirmation text may render in the iframe or the top-level page.
-        targets = [page]
+        """Read the confirmation heading and booking id from the confirmation page.
+
+        This is a full top-level page (a genuine navigation, not something inside
+        the grid iframe), so there's no need to check frames here -- unlike the
+        review/payment steps.
+        """
+        match = re.search(r"/BookingConfirmation/([0-9a-fA-F-]+)", page.url)
+        booking_id = match.group(1) if match else None
+
         try:
-            targets.insert(0, self._grid_frame(page))
-        except Exception:  # noqa: BLE001 - frame may be gone after redirect
+            heading = page.locator(SEL_CONFIRMATION).first
+            if heading.count() > 0:
+                text = heading.inner_text(timeout=5000).strip()
+                return f"{text} (booking id: {booking_id})" if booking_id else text
+        except Exception:  # noqa: BLE001
             pass
-        for target in targets:
-            try:
-                loc = target.locator(SEL_CONFIRMATION).first
-                if loc.count() > 0:
-                    return loc.inner_text(timeout=5000).strip()
-            except Exception:  # noqa: BLE001
-                continue
-        return None
+
+        return f"booking id: {booking_id}" if booking_id else None
 
     # -- helpers --------------------------------------------------------------
 

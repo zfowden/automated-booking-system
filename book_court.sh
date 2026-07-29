@@ -12,7 +12,7 @@ DEFAULT_DATE=$(date -d "+6 days" +%Y-%m-%d)
 
 # --- INPUT VARIABLES ---
 # Syntax: ${1:-"default_value"} uses argument 1 if provided, otherwise falls back to default
-TIME="${2:-"11:00"}"
+TIME="${2:-"18:00"}"
 DURATION="${3:-"60"}"
 
 # Activate virtual environment if it exists
