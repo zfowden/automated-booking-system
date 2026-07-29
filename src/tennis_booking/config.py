@@ -1,7 +1,7 @@
 """Environment-backed configuration."""
 
 from __future__ import annotations
-
+import re
 from enum import Enum
 
 from pydantic import Field
@@ -106,3 +106,8 @@ class Settings(BaseSettings):
     def has_card_details(self) -> bool:
         """Whether card fields are populated enough to attempt payment."""
         return bool(self.card_number and self.card_expiry and self.card_cvv)
+
+    @property
+    def card_expiry_digits(self) -> str:
+        """card_expiry with any separators removed, e.g. '' -> ''."""
+        return re.sub(r"\D", "", self.card_expiry)

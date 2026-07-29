@@ -85,12 +85,24 @@ SEL_PAY_PAGE_MARKER = (
     "input[autocomplete='cc-number'], input[name*='card' i], "
     "iframe[name*='card' i], iframe[title*='card' i], iframe[src*='stripe' i]"
 )
+# The booking-review page shown after confirming a slot: "Booking details" +
+# "Basket summary" with a total cost, and a single "Confirm and pay" button.
+# No card fields live here -- this is distinct from SEL_PAY_PAGE_MARKER, which
+# only matches once an actual card-entry form/iframe (Stripe/Opayo) appears.
+SEL_REVIEW_CONFIRM_AND_PAY = "button:has-text('Confirm and pay')"
 SEL_CARD_NUMBER = "input[autocomplete='cc-number'], input[name*='number' i], input[name*='cardnumber' i]"
 SEL_CARD_EXPIRY = "input[autocomplete='cc-exp'], input[name*='exp' i], input[placeholder*='MM' i]"
 SEL_CARD_CVV = "input[autocomplete='cc-csc'], input[name*='cvc' i], input[name*='cvv' i], input[name*='security' i]"
 SEL_CARD_NAME = "input[autocomplete='cc-name'], input[name*='cardholder' i], input[name*='nameoncard' i]"
 SEL_CARD_POSTCODE = "input[autocomplete='postal-code'], input[name*='postcode' i], input[name*='zip' i]"
 SEL_PAY_BUTTON = "button:has-text('Pay'), button:has-text('Pay now'), button:has-text('Confirm payment')"
+SEL_STRIPE_SUBMIT_BUTTON = "#cs-stripe-elements-submit-button"
+# Each Stripe Elements field renders in its own nested iframe, identified by a
+# stable title attribute (verified against the live checkout HTML, 2026-07).
+# The input itself lives inside that iframe's document, not on the parent page.
+SEL_STRIPE_CARD_NUMBER_FRAME = "iframe[title='Secure card number input frame']"
+SEL_STRIPE_CARD_EXPIRY_FRAME = "iframe[title='Secure expiration date input frame']"
+SEL_STRIPE_CARD_CVC_FRAME = "iframe[title='Secure CVC input frame']"
 # -----------------------------------------------------------------------------
 
 # Where error/dry-run screenshots are written. Overridable via SCREENSHOT_DIR so
@@ -485,40 +497,151 @@ class ClubSparkBooker:
 
         return self._read_confirmation(page)
 
-    def _handle_payment(self, page: Page) -> None:
-        """Detect and complete a paid checkout, if one is present.
+    def _handle_payment(self, page: Page, max_steps: int = 3) -> None:
+        """Walk the (possibly multi-step) paid checkout to completion.
 
-        Does nothing when no payment form is detected (free / already-confirmed
-        booking). When a checkout is detected, fills the card fields and then
-        pays -- but ONLY if ``settings.confirm_payment`` is true. Otherwise it
-        stops before paying (dry run) and raises :class:`PaymentError` so the run
-        is reported as not completed rather than silently spending money.
+        ClubSpark's paid flow can involve up to two distinct steps:
+          1. A booking-review page (see screenshot) with a cost total and a
+             single "Confirm and pay" button -- no card fields yet.
+          2. An actual card-entry form/iframe (Stripe/Opayo), matched by
+             SEL_PAY_PAGE_MARKER.
+        Some venues may go straight to (2), or (1) may be the only step if the
+        account already has a saved payment method -- so we loop, re-checking
+        after each click, rather than assuming a fixed number of steps.
         """
-        target = self._payment_target(page)
-        if target is None:
-            log.info("No payment step detected; treating as a free/confirmed booking.")
-            return
+        for _ in range(max_steps):
+            target = self._payment_target(page)
+            if target is not None:
+                self._pay_with_card(page, target)
+                return
 
+            review_target = self._review_confirm_target(page)
+            if review_target is None:
+                log.info("No payment step detected; treating as a free/confirmed booking.")
+                return
+
+            if not self.settings.confirm_payment:
+                self._screenshot(page, "payment-dryrun")
+                raise PaymentError(
+                    "Reached the 'Confirm and pay' review step (cost shown) but "
+                    "CONFIRM_PAYMENT is not enabled -- stopping before paying "
+                    "(dry run). Set CONFIRM_PAYMENT=true to complete real, paid "
+                    "bookings."
+                )
+
+            log.warning("CONFIRM_PAYMENT enabled -- clicking 'Confirm and pay'.")
+            review_target.click(SEL_REVIEW_CONFIRM_AND_PAY, timeout=10000)
+            # page.wait_for_load_state("networkidle")
+            # Loop again: either a card form now appears, or the booking is done.
+
+        raise PaymentError(
+            "Payment flow did not resolve after multiple confirm steps -- "
+            "the checkout layout may have changed."
+        )
+
+    def _pay_with_card(self, page: Page, target) -> None:
         if not self.settings.has_card_details:
             raise PaymentError(
                 "A paid checkout was reached but no card details are configured "
                 "(CARD_NUMBER / CARD_EXPIRY / CARD_CVV)."
             )
 
-        log.info("Payment step detected; filling card details.")
-        self._fill_card(target)
+        log.info("Payment step detected; filling Stripe card fields.")
+        self._fill_card(page)
 
         if not self.settings.confirm_payment:
             self._screenshot(page, "payment-dryrun")
             raise PaymentError(
-                "Reached the payment step and filled the card, but CONFIRM_PAYMENT "
-                "is not enabled -- stopping before paying (dry run). Set "
-                "CONFIRM_PAYMENT=true to complete real, paid bookings."
+                "Filled the card fields, but CONFIRM_PAYMENT is not enabled -- "
+                "stopping before paying (dry run)."
             )
 
         log.warning("CONFIRM_PAYMENT enabled -- submitting payment (this spends money).")
-        self._click_first(target, page, SEL_PAY_BUTTON, timeout=10000)
-        page.wait_for_load_state("networkidle")
+        pay_button = page.locator(SEL_STRIPE_SUBMIT_BUTTON)
+        pay_button.wait_for(state="visible", timeout=10000)
+        log.info(
+            "Pay button found: text=%r disabled=%r",
+            pay_button.inner_text(timeout=2000),
+            pay_button.get_attribute("disabled"),
+        )
+        # Stripe enables the button once all three fields validate; give it a beat.
+        for _ in range(20):
+            if not pay_button.is_disabled():
+                break
+            page.wait_for_timeout(250)
+        pay_button.click(timeout=10000)
+
+        try:
+            page.wait_for_selector(".payment-success, .payment-failed", timeout=self.settings.slot_timeout_seconds * 1000)
+        except PlaywrightTimeoutError as exc:
+            self._screenshot(page, "payment-no-result")
+            raise PaymentError(
+                "Clicked Pay but no success/failure indicator appeared in time."
+            ) from exc
+
+        if page.locator(".payment-failed:not(.hidden)").count() > 0:
+            error_text = page.locator(".stripe-error-message").first.inner_text(timeout=2000)
+            raise PaymentError(f"Stripe reported a payment failure: {error_text}")
+
+    # --- Payment: per-field frame search (fields may live in separate iframes) --
+
+    def _find_field_target(self, page: Page, selector: str):
+        """Return the frame/page whose DOM contains `selector`, or None.
+
+        Hosted card widgets often split card number / expiry / CVC into separate
+        same-origin-looking but actually distinct iframes. Don't assume one frame
+        holds all three fields -- resolve each field independently.
+        """
+        for target in (page, *page.frames):
+            try:
+                loc = target.locator(selector)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return target
+            except Exception:  # noqa: BLE001 - frame may be mid-navigation/detached
+                continue
+        return None
+
+    def _fill_card(self, page: Page) -> None:
+        """Fill the three Stripe Elements fields, each inside its own nested iframe.
+
+        Each Stripe card iframe also contains a permanently-disabled decoy input
+        (class="StripeField--fake", aria-hidden="true") used to defeat autofill --
+        exclude it explicitly rather than relying on DOM order via .first.
+        """
+        s = self.settings
+        fields = [
+            (SEL_STRIPE_CARD_NUMBER_FRAME, s.card_number, "card number"),
+            (SEL_STRIPE_CARD_EXPIRY_FRAME, s.card_expiry, "expiry"),
+            (SEL_STRIPE_CARD_CVC_FRAME, s.card_cvv, "CVC"),
+        ]
+        for frame_selector, value, label in fields:
+            if not value:
+                raise PaymentError(f"Missing required card value ({label}).")
+            try:
+                field_frame = page.frame_locator(frame_selector)
+                input_box = field_frame.locator(
+                    "input:not(.StripeField--fake):not([aria-hidden='true'])"
+                ).first
+                input_box.wait_for(state="visible", timeout=8000)
+                input_box.click()
+                input_box.press_sequentially(value, delay=30) 
+            except Exception as exc:  # noqa: BLE001
+                raise PaymentError(f"Failed to fill the {label} field: {exc}") from exc
+
+    def _review_confirm_target(self, page: Page):
+        """Return the frame/page containing the booking-review 'Confirm and pay'
+        button, or None if absent. This page shows the basket total but has no
+        card fields, so it's invisible to _payment_target and needs its own
+        detector.
+        """
+        candidates = [page, *page.frames]
+        for target in candidates:
+            try:
+                if target.locator(SEL_REVIEW_CONFIRM_AND_PAY).count() > 0:
+                    return target
+            except Exception:  # noqa: BLE001 - frame may be mid-navigation
+                continue
+        return None
 
     def _payment_target(self, page: Page):
         """Return the frame/page containing the card form, or None if absent.
@@ -534,17 +657,6 @@ class ClubSparkBooker:
             except Exception:  # noqa: BLE001 - frame may be mid-navigation
                 continue
         return None
-
-    def _fill_card(self, target) -> None:
-        """Fill the card fields on the payment target (best-effort per field)."""
-        s = self.settings
-        self._fill_if_present(target, SEL_CARD_NUMBER, s.card_number)
-        self._fill_if_present(target, SEL_CARD_EXPIRY, s.card_expiry)
-        self._fill_if_present(target, SEL_CARD_CVV, s.card_cvv)
-        if s.card_name:
-            self._fill_if_present(target, SEL_CARD_NAME, s.card_name)
-        if s.card_postcode:
-            self._fill_if_present(target, SEL_CARD_POSTCODE, s.card_postcode)
 
     @staticmethod
     def _fill_if_present(target, selector: str, value: str) -> None:

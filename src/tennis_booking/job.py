@@ -19,12 +19,13 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, time, timedelta
+from dotenv import load_dotenv
 
 from .logging_config import configure_logging, get_logger
 from .models import BookingRequest, london_today
 
 log = get_logger(__name__)
-
+load_dotenv()
 
 def _parse_time(value: str) -> time:
     return datetime.strptime(value.strip(), "%H:%M").time()
@@ -36,7 +37,7 @@ def _build_request() -> BookingRequest:
     if date_env:
         target_date = datetime.strptime(date_env, "%Y-%m-%d").date()
     else:
-        days_ahead = int(os.environ.get("BOOK_DAYS_AHEAD", "7"))
+        days_ahead = int(os.environ.get("BOOK_DAYS_AHEAD", "6"))
         target_date = london_today() + timedelta(days=days_ahead)
 
     time_env = os.environ.get("BOOK_TIME", "").strip()
